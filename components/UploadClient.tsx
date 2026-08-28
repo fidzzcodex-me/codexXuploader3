@@ -35,7 +35,7 @@ interface PickedFile {
 interface UploadResultItem {
   fileName: string;
   finalPath: string;
-  status: "uploaded" | "skipped-duplicate" | "renamed";
+  status: "uploaded" | "skipped-duplicate" | "replaced";
   sizeBytes: number;
 }
 
@@ -613,7 +613,7 @@ export default function UploadClient() {
                 className={`ml-2 flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold ${
                   r.status === "uploaded"
                     ? "bg-primary-50 text-primary-600"
-                    : r.status === "renamed"
+                    : r.status === "replaced"
                     ? "bg-amber-50 text-amber-600"
                     : "bg-ink/5 text-ink/40"
                 }`}
@@ -622,7 +622,7 @@ export default function UploadClient() {
                   <FontAwesomeIcon icon={faClone} className="h-2.5 w-2.5" />
                 )}
                 {r.status === "uploaded" && "uploaded"}
-                {r.status === "renamed" && "renamed"}
+                {r.status === "replaced" && "replaced"}
                 {r.status === "skipped-duplicate" && "identik · skip"}
               </span>
             </div>
