@@ -21,7 +21,7 @@ interface HistoryItem {
   fileName: string;
   finalPath: string;
   sizeBytes: number;
-  status: "uploaded" | "skipped-duplicate" | "renamed";
+  status: "uploaded" | "skipped-duplicate" | "replaced";
   createdAt: string;
 }
 
@@ -41,7 +41,7 @@ function githubFileUrl(item: HistoryItem) {
 
 const statusConfig = {
   uploaded: { icon: faCircleCheck, cls: "bg-primary-50 text-primary-600", label: "uploaded" },
-  renamed: { icon: faPenToSquare, cls: "bg-amber-50 text-amber-600", label: "renamed" },
+  replaced: { icon: faPenToSquare, cls: "bg-amber-50 text-amber-600", label: "replaced" },
   "skipped-duplicate": { icon: faClone, cls: "bg-ink/5 text-ink/40", label: "identik · skip" }
 };
 
