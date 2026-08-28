@@ -14,7 +14,7 @@ export interface UploadRecord {
   path: string;
   sizeBytes: number;
   sha: string;
-  status: "uploaded" | "skipped-duplicate" | "renamed";
+  status: "uploaded" | "skipped-duplicate" | "replaced";
   finalPath: string;
   createdAt: string;
 }
