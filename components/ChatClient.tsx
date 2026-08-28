@@ -14,10 +14,15 @@ import {
   faLock,
   faGlobe,
   faPenToSquare,
-  faBroom
+  faBroom,
+  faPaperclip,
+  faCloudArrowUp,
+  faXmark,
+  faFile
 } from "@fortawesome/free-solid-svg-icons";
 import "@/lib/fontawesome";
 import { useToast } from "@/components/ToastProvider";
+import { appendUploadHistory } from "@/lib/uploadHistoryClient";
 
 type ProposedAction =
   | { type: "delete_repo"; repo: string }
@@ -25,6 +30,7 @@ type ProposedAction =
   | { type: "delete_file"; repo: string; path: string }
   | { type: "change_visibility"; repo: string; visibility: "public" | "private" }
   | { type: "rename_repo"; repo: string; newName: string }
+  | { type: "upload_files"; repo: string }
   | { type: "none" };
 
 function describeAction(action: ProposedAction): { icon: any; label: string } {
@@ -51,6 +57,11 @@ function describeAction(action: ProposedAction): { icon: any; label: string } {
         icon: faPenToSquare,
         label: `Ganti nama repo "${action.repo}" jadi "${action.newName}"`
       };
+    case "upload_files":
+      return {
+        icon: faCloudArrowUp,
+        label: `Upload file ke repo "${action.repo}"`
+      };
     default:
       return { icon: faPlus, label: "Aksi tidak dikenali" };
   }
@@ -63,6 +74,7 @@ interface ChatMessage {
   proposedAction?: ProposedAction;
   actionState?: "pending" | "confirmed" | "cancelled" | "error";
   actionResultMessage?: string;
+  attachedFileNames?: string[];
 }
 
 const CHAT_STORAGE_KEY = "harbor_chat_messages";
@@ -83,7 +95,7 @@ function loadStoredMessages(): ChatMessage[] | null {
 const WELCOME_MESSAGE: ChatMessage = {
   id: "welcome",
   role: "ai",
-  text: "Halo! Saya bisa bantu jawab pertanyaan seputar repo kamu, atau usulkan aksi seperti membuat/menghapus repo — setiap aksi tetap butuh konfirmasi kamu dulu."
+  text: "Halo! Saya bisa bantu jawab pertanyaan seputar repo kamu, baca isi file, cari kode di semua repo, atau usulkan aksi seperti upload file, membuat/menghapus repo — setiap aksi tetap butuh konfirmasi kamu dulu."
 };
 
 export default function ChatClient() {
@@ -94,7 +106,10 @@ export default function ChatClient() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const filesByMessageId = useRef<Map<string, File[]>>(new Map());
 
   useEffect(() => {
     try {
@@ -107,21 +122,52 @@ export default function ChatClient() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages]);
 
+  function handlePickFiles(fileList: FileList | null) {
+    if (!fileList || fileList.length === 0) return;
+    setPendingFiles((prev) => [...prev, ...Array.from(fileList)]);
+  }
+
+  function removePendingFile(index: number) {
+    setPendingFiles((prev) => prev.filter((_, i) => i !== index));
+  }
+
   async function sendMessage() {
     const text = input.trim();
-    if (!text || loading) return;
+    if ((!text && pendingFiles.length === 0) || loading) return;
     setInput("");
     setError("");
 
-    const userMsg: ChatMessage = { id: `u-${Date.now()}`, role: "user", text };
+    const attachedFiles = pendingFiles;
+    setPendingFiles([]);
+
+    const userMsgId = `u-${Date.now()}`;
+    const userMsg: ChatMessage = {
+      id: userMsgId,
+      role: "user",
+      text: text || `(mengirim ${attachedFiles.length} file)`,
+      attachedFileNames: attachedFiles.length
+        ? attachedFiles.map((f) => f.name)
+        : undefined
+    };
+    if (attachedFiles.length) {
+      filesByMessageId.current.set(userMsgId, attachedFiles);
+    }
     setMessages((prev) => [...prev, userMsg]);
     setLoading(true);
 
     try {
+      const recentHistory = messages
+        .slice(-8)
+        .filter((m) => m.id !== "welcome")
+        .map((m) => ({ role: m.role, text: m.text }));
+
       const res = await fetch("/api/ai/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text })
+        body: JSON.stringify({
+          message: text || "(pengguna melampirkan file, tanyakan mau diupload ke repo mana jika belum jelas)",
+          history: recentHistory
+        })
       });
       const data = await res.json();
 
@@ -131,13 +177,25 @@ export default function ChatClient() {
         return;
       }
 
+      let proposedAction: ProposedAction = data.proposedAction;
+      if (attachedFiles.length > 0 && proposedAction.type === "none") {
+        const repoGuessMatch = text.match(/repo\s+([a-z0-9._-]+)/i);
+        if (repoGuessMatch) {
+          proposedAction = { type: "upload_files", repo: repoGuessMatch[1] };
+        }
+      }
+
+      const aiMsgId = `a-${Date.now()}`;
+      if (proposedAction.type === "upload_files" && attachedFiles.length) {
+        filesByMessageId.current.set(aiMsgId, attachedFiles);
+      }
+
       const aiMsg: ChatMessage = {
-        id: `a-${Date.now()}`,
+        id: aiMsgId,
         role: "ai",
         text: data.reply,
-        proposedAction: data.proposedAction,
-        actionState:
-          data.proposedAction?.type !== "none" ? "pending" : undefined
+        proposedAction,
+        actionState: proposedAction.type !== "none" ? "pending" : undefined
       };
       setMessages((prev) => [...prev, aiMsg]);
     } catch {
@@ -153,12 +211,45 @@ export default function ChatClient() {
     );
 
     try {
-      const res = await fetch("/api/ai/execute-action", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(action)
-      });
+      let res: Response;
+
+      if (action.type === "upload_files") {
+        const files = filesByMessageId.current.get(msgId) || [];
+        if (!files.length) {
+          throw new Error("Tidak ada file terlampir untuk diupload.");
+        }
+        const formData = new FormData();
+        formData.set("repo", action.repo);
+        files.forEach((f) => formData.append("files", f));
+        res = await fetch("/api/ai/execute-upload", {
+          method: "POST",
+          body: formData
+        });
+      } else {
+        res = await fetch("/api/ai/execute-action", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(action)
+        });
+      }
+
       const data = await res.json();
+
+      if (action.type === "upload_files" && data.ok && data.results) {
+        const now = new Date().toISOString();
+        appendUploadHistory(
+          data.results.map((r: any) => ({
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            repo: data.repo,
+            owner: data.owner,
+            fileName: r.fileName,
+            finalPath: r.finalPath,
+            sizeBytes: r.sizeBytes,
+            status: r.status,
+            createdAt: now
+          }))
+        );
+      }
 
       setMessages((prev) =>
         prev.map((m) =>
@@ -175,15 +266,19 @@ export default function ChatClient() {
         data.ok ? data.message : data.error || "Aksi gagal.",
         data.ok ? "success" : "error"
       );
-    } catch {
+    } catch (err: any) {
       setMessages((prev) =>
         prev.map((m) =>
           m.id === msgId
-            ? { ...m, actionState: "error", actionResultMessage: "Koneksi terputus." }
+            ? {
+                ...m,
+                actionState: "error",
+                actionResultMessage: err?.message || "Koneksi terputus."
+              }
             : m
         )
       );
-      showToast("Koneksi terputus.", "error");
+      showToast(err?.message || "Koneksi terputus.", "error");
     }
   }
 
@@ -191,10 +286,12 @@ export default function ChatClient() {
     setMessages((prev) =>
       prev.map((m) => (m.id === msgId ? { ...m, actionState: "cancelled" } : m))
     );
+    filesByMessageId.current.delete(msgId);
   }
 
   function clearChat() {
     setMessages([WELCOME_MESSAGE]);
+    filesByMessageId.current.clear();
     try {
       window.sessionStorage.removeItem(CHAT_STORAGE_KEY);
     } catch {
@@ -258,6 +355,24 @@ export default function ChatClient() {
               <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
                 {m.text}
               </p>
+
+              {m.attachedFileNames && m.attachedFileNames.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {m.attachedFileNames.map((name) => (
+                    <span
+                      key={name}
+                      className={`flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                        m.role === "user"
+                          ? "bg-white/20 text-white"
+                          : "bg-white text-ink/60"
+                      }`}
+                    >
+                      <FontAwesomeIcon icon={faFile} className="h-2.5 w-2.5" />
+                      {name}
+                    </span>
+                  ))}
+                </div>
+              )}
 
               {m.proposedAction && m.proposedAction.type !== "none" && (
                 <div className="mt-3 rounded-xl border border-primary-200 bg-white p-3">
@@ -333,17 +448,54 @@ export default function ChatClient() {
         </div>
       )}
 
-      <div className="mt-3 flex items-center gap-2 rounded-full border border-line bg-white p-1.5 pl-5 shadow-card transition-shadow focus-within:border-primary-300 focus-within:shadow-soft">
+      {pendingFiles.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-2 rounded-xl border border-line bg-white p-3">
+          {pendingFiles.map((f, i) => (
+            <span
+              key={`${f.name}-${i}`}
+              className="flex items-center gap-1.5 rounded-full bg-mist px-3 py-1.5 text-xs font-semibold text-primary-700"
+            >
+              <FontAwesomeIcon icon={faFile} className="h-3 w-3" />
+              {f.name}
+              <button
+                onClick={() => removePendingFile(i)}
+                className="ml-1 flex h-4 w-4 items-center justify-center rounded-full text-primary-400 hover:text-primary-700"
+              >
+                <FontAwesomeIcon icon={faXmark} className="h-2.5 w-2.5" />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+
+      <div className="mt-3 flex items-center gap-2 rounded-full border border-line bg-white p-1.5 pl-3 shadow-card transition-shadow focus-within:border-primary-300 focus-within:shadow-soft">
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            handlePickFiles(e.target.files);
+            e.target.value = "";
+          }}
+        />
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-ink/40 transition-colors hover:bg-mist hover:text-primary-600"
+          title="Lampirkan file"
+        >
+          <FontAwesomeIcon icon={faPaperclip} className="h-3.5 w-3.5" />
+        </button>
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && sendMessage()}
-          placeholder="Tanya sesuatu, contoh: buat repo demo-app"
+          placeholder="Tanya sesuatu, contoh: baca file src/index.js di repo demo-app"
           className="flex-1 bg-transparent text-sm text-ink placeholder:text-ink/35 focus:outline-none"
         />
         <button
           onClick={sendMessage}
-          disabled={!input.trim() || loading}
+          disabled={(!input.trim() && pendingFiles.length === 0) || loading}
           className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary-500 text-white shadow-soft transition-all hover:scale-105 hover:bg-primary-600 disabled:cursor-not-allowed disabled:scale-100 disabled:bg-ink/15 disabled:shadow-none"
         >
           <FontAwesomeIcon icon={faPaperPlane} className="h-3.5 w-3.5" />
