@@ -35,7 +35,7 @@ const steps = [
   {
     icon: faShieldHalved,
     title: "Anti tumpang tindih",
-    desc: "File yang isinya identik tidak pernah menimpa. File berbeda dengan nama sama otomatis diberi nama baru."
+    desc: "File yang isinya identik tidak pernah ditimpa dua kali. File berbeda dengan nama sama otomatis di-replace, bukan disimpan berdampingan."
   },
   {
     icon: faRobot,
