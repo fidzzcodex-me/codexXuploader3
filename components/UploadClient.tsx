@@ -25,18 +25,33 @@ import {
 import "@/lib/fontawesome";
 import { previewZipContents, ZipPreviewResult } from "@/lib/zipPreview";
 import { useToast } from "@/components/ToastProvider";
+import { appendUploadHistory } from "@/lib/uploadHistoryClient";
+import {
+  ActiveUploadState,
+  getUploadState,
+  subscribeUploadState,
+  runUploadInBackground,
+  retryFailedFiles
+} from "@/lib/uploadRunner";
+import {
+  UploadFormState,
+  getUploadFormState,
+  subscribeUploadFormState,
+  setUploadFormState,
+  getPickedFiles,
+  subscribePickedFiles,
+  setPickedFiles,
+  PickedFileRef
+} from "@/lib/uploadFormState";
 
-interface PickedFile {
-  file: File;
-  id: string;
-  relativePath: string;
-}
+type PickedFile = PickedFileRef;
 
 interface UploadResultItem {
   fileName: string;
   finalPath: string;
-  status: "uploaded" | "skipped-duplicate" | "replaced";
+  status: "uploaded" | "skipped-duplicate" | "replaced" | "failed";
   sizeBytes: number;
+  errorMessage?: string;
 }
 
 function fileIcon(name: string) {
@@ -77,29 +92,59 @@ async function readEntryRecursive(
 
 export default function UploadClient() {
   const { showToast } = useToast();
-  const [repo, setRepo] = useState("");
-  const [isPrivate, setIsPrivate] = useState(false);
-  const [createIfMissing, setCreateIfMissing] = useState(true);
-  const [basePath, setBasePath] = useState("");
-  const [branch, setBranch] = useState("");
+  const [formState, setFormStateLocal] = useState<UploadFormState>(
+    getUploadFormState()
+  );
+  const { repo, isPrivate, createIfMissing, basePath, branch } = formState;
   const [availableBranches, setAvailableBranches] = useState<string[]>([]);
   const [defaultBranch, setDefaultBranch] = useState("");
   const [branchesLoading, setBranchesLoading] = useState(false);
-  const [files, setFiles] = useState<PickedFile[]>([]);
+  const [files, setFilesLocal] = useState<PickedFile[]>(() => getPickedFiles());
   const [dragging, setDragging] = useState(false);
-  const [status, setStatus] = useState<"idle" | "loading" | "done" | "error">(
-    "idle"
+  const [uploadState, setUploadStateLocal] = useState<ActiveUploadState>(
+    getUploadState()
   );
-  const [errorMsg, setErrorMsg] = useState("");
-  const [results, setResults] = useState<UploadResultItem[]>([]);
-  const [progress, setProgress] = useState<{ index: number; total: number } | null>(
-    null
-  );
-  const [currentFileLabel, setCurrentFileLabel] = useState("");
   const [zipPreview, setZipPreview] = useState<ZipPreviewResult | null>(null);
   const [zipPreviewLoading, setZipPreviewLoading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
+
+  const { status, progress, currentFileLabel, results, errorMsg } = uploadState;
+
+  function setRepo(v: string) {
+    setUploadFormState({ repo: v });
+  }
+  function setIsPrivate(v: boolean) {
+    setUploadFormState({ isPrivate: v });
+  }
+  function setCreateIfMissing(v: boolean) {
+    setUploadFormState({ createIfMissing: v });
+  }
+  function setBasePath(v: string) {
+    setUploadFormState({ basePath: v });
+  }
+  function setBranch(v: string) {
+    setUploadFormState({ branch: v });
+  }
+  function setFiles(updater: PickedFile[] | ((prev: PickedFile[]) => PickedFile[])) {
+    const next =
+      typeof updater === "function"
+        ? (updater as (prev: PickedFile[]) => PickedFile[])(getPickedFiles())
+        : updater;
+    setPickedFiles(next);
+  }
+
+  useEffect(() => {
+    return subscribeUploadFormState(setFormStateLocal);
+  }, []);
+
+  useEffect(() => {
+    return subscribePickedFiles(setFilesLocal);
+  }, []);
+
+  useEffect(() => {
+    return subscribeUploadState(setUploadStateLocal);
+  }, []);
 
   useEffect(() => {
     const trimmed = repo.trim();
@@ -136,29 +181,66 @@ export default function UploadClient() {
     return () => clearTimeout(timeout);
   }, [repo]);
 
-  const addFileList = useCallback((fileList: FileList | null) => {
-    if (!fileList) return;
-    const picked: PickedFile[] = Array.from(fileList).map((f) => {
-      const relPath = (f as any).webkitRelativePath || f.name;
-      return {
-        file: f,
-        id: `${relPath}-${f.size}-${Math.random().toString(36).slice(2, 8)}`,
-        relativePath: relPath
-      };
-    });
-    setFiles((prev) => [...prev, ...picked]);
-  }, []);
+  const MAX_FILE_SIZE = 75 * 1024 * 1024;
+
+  const addFileList = useCallback(
+    (fileList: FileList | null) => {
+      if (!fileList) return;
+      const tooLarge: string[] = [];
+      const picked: PickedFile[] = [];
+
+      Array.from(fileList).forEach((f) => {
+        if (f.size > MAX_FILE_SIZE) {
+          tooLarge.push(f.name);
+          return;
+        }
+        const relPath = (f as any).webkitRelativePath || f.name;
+        picked.push({
+          file: f,
+          id: `${relPath}-${f.size}-${Math.random().toString(36).slice(2, 8)}`,
+          relativePath: relPath
+        });
+      });
+
+      if (tooLarge.length > 0) {
+        showToast(
+          `${tooLarge.length} file dilewati karena lebih dari 75MB: ${tooLarge.slice(0, 3).join(", ")}${tooLarge.length > 3 ? ", ..." : ""}`,
+          "error"
+        );
+      }
+
+      setFiles((prev) => [...prev, ...picked]);
+    },
+    [showToast]
+  );
 
   const addEntries = useCallback(
     (entries: { file: File; relativePath: string }[]) => {
-      const picked: PickedFile[] = entries.map((e) => ({
-        file: e.file,
-        id: `${e.relativePath}-${e.file.size}-${Math.random().toString(36).slice(2, 8)}`,
-        relativePath: e.relativePath
-      }));
+      const tooLarge: string[] = [];
+      const picked: PickedFile[] = [];
+
+      entries.forEach((e) => {
+        if (e.file.size > MAX_FILE_SIZE) {
+          tooLarge.push(e.relativePath);
+          return;
+        }
+        picked.push({
+          file: e.file,
+          id: `${e.relativePath}-${e.file.size}-${Math.random().toString(36).slice(2, 8)}`,
+          relativePath: e.relativePath
+        });
+      });
+
+      if (tooLarge.length > 0) {
+        showToast(
+          `${tooLarge.length} file dilewati karena lebih dari 75MB: ${tooLarge.slice(0, 3).join(", ")}${tooLarge.length > 3 ? ", ..." : ""}`,
+          "error"
+        );
+      }
+
       setFiles((prev) => [...prev, ...picked]);
     },
-    []
+    [showToast]
   );
 
   async function handleDrop(e: React.DragEvent) {
@@ -207,94 +289,103 @@ export default function UploadClient() {
 
   async function handleUpload() {
     if (!repo.trim() || files.length === 0) return;
-    setStatus("loading");
-    setErrorMsg("");
-    setResults([]);
-    setProgress(null);
-    setCurrentFileLabel("");
+    const repoNameForToast = repo.trim();
+    const filesSnapshot = files;
+    setFiles([]);
 
-    try {
-      const formData = new FormData();
-      formData.set("repo", repo.trim());
-      formData.set("isPrivate", String(isPrivate));
-      formData.set("createIfMissing", String(createIfMissing));
-      formData.set("basePath", basePath.trim());
-      formData.set("branch", branch);
-      files.forEach((f) => {
-        formData.append("files", f.file);
-        formData.append("relativePaths", f.relativePath);
-      });
-
-      const res = await fetch("/api/github/upload", {
-        method: "POST",
-        body: formData
-      });
-
-      if (!res.ok || !res.body) {
-        let msg = "Upload gagal.";
-        try {
-          const data = await res.json();
-          msg = data.error || msg;
-        } catch {
+    await runUploadInBackground(
+      {
+        repo: repoNameForToast,
+        isPrivate,
+        createIfMissing,
+        basePath: basePath.trim(),
+        branch,
+        files: filesSnapshot.map((f) => ({
+          file: f.file,
+          relativePath: f.relativePath
+        }))
+      },
+      (payload) => {
+        const succeeded = payload.results.filter(
+          (r: UploadResultItem) => r.status !== "skipped-duplicate" && r.status !== "failed"
+        ).length;
+        const failed = payload.results.filter(
+          (r: UploadResultItem) => r.status === "failed"
+        ).length;
+        const now = new Date().toISOString();
+        appendUploadHistory(
+          payload.results
+            .filter((r: UploadResultItem) => r.status !== "failed")
+            .map((r: UploadResultItem) => ({
+              id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              repo: payload.repo,
+              owner: payload.owner,
+              fileName: r.fileName,
+              finalPath: r.finalPath,
+              sizeBytes: r.sizeBytes,
+              status: r.status as "uploaded" | "skipped-duplicate" | "replaced",
+              createdAt: now
+            }))
+        );
+        if (failed > 0) {
+          showToast(
+            `${succeeded} file berhasil diupload, ${failed} gagal. Coba upload ulang file yang gagal.`,
+            "error"
+          );
+        } else {
+          showToast(
+            `${succeeded} file berhasil diupload ke ${repoNameForToast}`,
+            "success"
+          );
         }
-        setStatus("error");
-        setErrorMsg(msg);
-        return;
+      },
+      (message) => {
+        showToast(message, "error");
       }
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let finished = false;
-
-      while (!finished) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-
-        const chunks = buffer.split("\n\n");
-        buffer = chunks.pop() || "";
-
-        for (const chunk of chunks) {
-          const eventMatch = chunk.match(/^event: (.+)$/m);
-          const dataMatch = chunk.match(/^data: (.+)$/m);
-          if (!eventMatch || !dataMatch) continue;
-          const event = eventMatch[1];
-          const data = JSON.parse(dataMatch[1]);
-
-          if (event === "start") {
-            setProgress({ index: 0, total: data.total });
-          } else if (event === "progress") {
-            setProgress({ index: data.index, total: data.total });
-            setCurrentFileLabel(data.result?.finalPath || "");
-          } else if (event === "done") {
-            setResults(data.results);
-            setStatus("done");
-            setFiles([]);
-            finished = true;
-            const uploaded = data.results.filter(
-              (r: UploadResultItem) => r.status !== "skipped-duplicate"
-            ).length;
-            showToast(
-              `${uploaded} file berhasil diupload ke ${repo}`,
-              "success"
-            );
-          } else if (event === "error") {
-            setStatus("error");
-            setErrorMsg(data.error || "Upload gagal.");
-            finished = true;
-            showToast(data.error || "Upload gagal.", "error");
-          }
-        }
-      }
-    } catch {
-      setStatus("error");
-      setErrorMsg("Koneksi ke server terputus.");
-      showToast("Koneksi ke server terputus.", "error");
-    }
+    );
   }
 
   const hasFolderFiles = files.some((f) => f.relativePath.includes("/"));
+
+  async function handleRetryFailed() {
+    const failedPaths = results
+      .filter((r) => r.status === "failed")
+      .map((r) => r.finalPath);
+    if (failedPaths.length === 0) return;
+
+    await retryFailedFiles(
+      failedPaths,
+      (payload) => {
+        const succeeded = payload.results.filter(
+          (r: UploadResultItem) => r.status !== "skipped-duplicate" && r.status !== "failed"
+        ).length;
+        const failed = payload.results.filter(
+          (r: UploadResultItem) => r.status === "failed"
+        ).length;
+        const now = new Date().toISOString();
+        appendUploadHistory(
+          payload.results
+            .filter((r: UploadResultItem) => r.status !== "failed")
+            .map((r: UploadResultItem) => ({
+              id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              repo: payload.repo,
+              owner: payload.owner,
+              fileName: r.fileName,
+              finalPath: r.finalPath,
+              sizeBytes: r.sizeBytes,
+              status: r.status as "uploaded" | "skipped-duplicate" | "replaced",
+              createdAt: now
+            }))
+        );
+        if (failed > 0) {
+          showToast(`${succeeded} berhasil, ${failed} masih gagal.`, "error");
+        } else {
+          showToast(`${succeeded} file berhasil diupload ulang.`, "success");
+        }
+      },
+      (message) => showToast(message, "error")
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -599,31 +690,55 @@ export default function UploadClient() {
           data-aos="fade-up"
           className="space-y-2 rounded-2xl border border-line bg-white p-4 shadow-card"
         >
-          <p className="mb-2 flex items-center gap-2 text-sm font-bold text-emerald-600">
-            <FontAwesomeIcon icon={faCircleCheck} className="h-4 w-4" />
-            Selesai — {results.length} file diproses
-          </p>
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <p className="flex items-center gap-2 text-sm font-bold text-emerald-600">
+              <FontAwesomeIcon icon={faCircleCheck} className="h-4 w-4" />
+              Selesai — {results.length} file diproses
+            </p>
+            {results.some((r) => r.status === "failed") && (
+              <button
+                onClick={handleRetryFailed}
+                className="flex items-center gap-1.5 rounded-full bg-red-50 px-3 py-1.5 text-xs font-bold text-red-600 transition-colors hover:bg-red-100"
+              >
+                <FontAwesomeIcon icon={faCircleNotch} className="h-3 w-3" />
+                Coba lagi yang gagal
+              </button>
+            )}
+          </div>
           {results.map((r, i) => (
             <div
               key={i}
               className="flex items-center justify-between rounded-lg bg-cloud px-4 py-2.5"
             >
-              <span className="truncate text-sm text-ink/70">{r.finalPath}</span>
+              <span className="min-w-0 flex-1 truncate text-sm text-ink/70">
+                {r.finalPath}
+                {r.status === "failed" && r.errorMessage && (
+                  <span className="block truncate text-xs text-red-500">
+                    {r.errorMessage}
+                  </span>
+                )}
+              </span>
               <span
                 className={`ml-2 flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold ${
                   r.status === "uploaded"
                     ? "bg-primary-50 text-primary-600"
                     : r.status === "replaced"
                     ? "bg-amber-50 text-amber-600"
+                    : r.status === "failed"
+                    ? "bg-red-50 text-red-600"
                     : "bg-ink/5 text-ink/40"
                 }`}
               >
                 {r.status === "skipped-duplicate" && (
                   <FontAwesomeIcon icon={faClone} className="h-2.5 w-2.5" />
                 )}
+                {r.status === "failed" && (
+                  <FontAwesomeIcon icon={faTriangleExclamation} className="h-2.5 w-2.5" />
+                )}
                 {r.status === "uploaded" && "uploaded"}
                 {r.status === "replaced" && "replaced"}
                 {r.status === "skipped-duplicate" && "identik · skip"}
+                {r.status === "failed" && "gagal"}
               </span>
             </div>
           ))}
