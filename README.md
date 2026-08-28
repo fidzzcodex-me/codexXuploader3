@@ -79,9 +79,11 @@ scope minimal:
   root repo tanpa folder pembungkus apa pun. File yang berasal dari folder
   (drag-drop atau tombol "Pilih folder") mempertahankan struktur aslinya.
 - File dengan konten identik pada path yang sama **tidak pernah** ditimpa
-  (dibandingkan lewat git blob SHA1) — otomatis di-skip.
-- File berbeda dengan nama sama otomatis diberi nama baru
-  (`nama (1).ext`, `nama (2).ext`, dst) alih-alih menimpa atau gagal.
+  (dibandingkan lewat git blob SHA1) — otomatis di-skip, tidak ada commit
+  percuma.
+- File berbeda dengan nama sama di-**replace**: file lama dihapus dan
+  digantikan file baru pada commit yang sama (bukan disimpan berdampingan
+  sebagai `nama (1).ext`).
 - Riwayat upload disimpan di **memory server terpisah dari cookie session**
   (`lib/uploadHistoryStore.ts`), dikunci per sesi AI. Ini sengaja dipisah
   dari cookie karena cookie browser dibatasi ~4KB — menaruh riwayat upload
@@ -96,6 +98,3 @@ scope minimal:
 - Setiap pesan chat menyertakan snapshot data GitHub terbaru (jumlah repo,
   daftar repo, visibility) sebagai context ke AI, supaya jawabannya akurat
   terhadap keadaan akun saat ini, bukan cuma sekali di awal sesi.
-- File berbeda dengan nama sama otomatis diberi nama baru
-  (`nama (1).ext`, `nama (2).ext`, dst) alih-alih menimpa atau gagal.
-- Riwayat upload disimpan di session (per login), bukan database persisten.
