@@ -1,12 +1,11 @@
 import { NextRequest } from "next/server";
-import { requireToken, AuthError, getSession } from "@/lib/requireAuth";
+import { requireToken, AuthError } from "@/lib/requireAuth";
 import { getOctokit } from "@/lib/github";
 import {
   flattenFilesForUpload,
   uploadFlatFiles,
   FileToUpload
 } from "@/lib/uploadEngine";
-import { appendUploadHistory } from "@/lib/uploadHistoryStore";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -35,7 +34,6 @@ export async function POST(req: NextRequest) {
   }
 
   const { token, login } = auth;
-  const session = await getSession();
 
   const formData = await req.formData();
   const repo = formData.get("repo") as string | null;
@@ -99,9 +97,17 @@ export async function POST(req: NextRequest) {
             ? requestedBranch
             : undefined;
 
+        const MAX_FILE_SIZE = 75 * 1024 * 1024;
         const filesToUpload: FileToUpload[] = [];
         for (let i = 0; i < files.length; i++) {
           const file = files[i];
+          if (file.size > MAX_FILE_SIZE) {
+            send("error", {
+              error: `File "${file.name}" melebihi batas 75MB dan tidak dapat diupload.`
+            });
+            controller.close();
+            return;
+          }
           const arrayBuffer = await file.arrayBuffer();
           const uploadName = relativePaths[i] || file.name;
           filesToUpload.push({
@@ -124,24 +130,7 @@ export async function POST(req: NextRequest) {
           branchToUse
         );
 
-        const now = new Date().toISOString();
-        const records = results.map((r) => ({
-          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          repo,
-          owner: login,
-          fileName: r.fileName,
-          path: r.finalPath,
-          sizeBytes: r.sizeBytes,
-          sha: r.sha,
-          status: r.status,
-          finalPath: r.finalPath,
-          createdAt: now
-        }));
-        if (session.aiSessionId) {
-          appendUploadHistory(session.aiSessionId, records);
-        }
-
-        send("done", { results });
+        send("done", { results, owner: login, repo });
       } catch (err: any) {
         send("error", { error: err?.message || "Gagal mengupload file." });
       } finally {
