@@ -12,10 +12,12 @@ import {
   faCodeBranch,
   faRightFromBracket
 } from "@fortawesome/free-solid-svg-icons";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import ParticleField from "./ParticleField";
 import AosInit from "./AosInit";
 import { ToastProvider } from "./ToastProvider";
+import { subscribeUploadState } from "@/lib/uploadRunner";
+import { resetUploadFormState, setPickedFiles } from "@/lib/uploadFormState";
 import "@/lib/fontawesome";
 
 interface NavItem {
@@ -41,6 +43,24 @@ export default function DashboardShell({
   const pathname = usePathname();
   const router = useRouter();
   const [loggingOut, setLoggingOut] = useState(false);
+  const [uploadInFlight, setUploadInFlight] = useState(false);
+
+  useEffect(() => {
+    return subscribeUploadState((state) => {
+      setUploadInFlight(state.status === "loading");
+    });
+  }, []);
+
+  useEffect(() => {
+    function handleBeforeUnload(e: BeforeUnloadEvent) {
+      if (uploadInFlight) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    }
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [uploadInFlight]);
 
   async function handleLogout() {
     setLoggingOut(true);
@@ -49,6 +69,8 @@ export default function DashboardShell({
       window.sessionStorage.removeItem("harbor_chat_messages");
     } catch {
     }
+    resetUploadFormState();
+    setPickedFiles([]);
     router.push("/");
   }
 
@@ -137,7 +159,7 @@ export default function DashboardShell({
                   }`}
                 >
                   <span
-                    className={`flex h-8 w-8 items-center justify-center rounded-lg transition-all duration-300 ${
+                    className={`relative flex h-8 w-8 items-center justify-center rounded-lg transition-all duration-300 ${
                       active
                         ? "bg-primary-500 text-white shadow-soft scale-105"
                         : "group-hover:bg-mist group-hover:scale-110"
@@ -149,6 +171,12 @@ export default function DashboardShell({
                         active ? "" : "group-hover:-translate-y-0.5"
                       }`}
                     />
+                    {item.href === "/dashboard/upload" && uploadInFlight && (
+                      <span className="absolute -right-0.5 -top-0.5 flex h-2.5 w-2.5">
+                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-75" />
+                        <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-amber-500" />
+                      </span>
+                    )}
                   </span>
                   <span className="text-[10px] font-semibold">{item.label}</span>
                   {active && (
