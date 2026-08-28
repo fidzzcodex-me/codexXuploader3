@@ -5,6 +5,7 @@ export type ProposedAction =
   | { type: "delete_file"; repo: string; path: string }
   | { type: "change_visibility"; repo: string; visibility: "public" | "private" }
   | { type: "rename_repo"; repo: string; newName: string }
+  | { type: "upload_files"; repo: string }
   | { type: "none" };
 
 export function detectProposedAction(userMessage: string): ProposedAction {
@@ -47,4 +48,13 @@ export function detectProposedAction(userMessage: string): ProposedAction {
   }
 
   return { type: "none" };
+}
+
+export function detectUploadTargetRepo(userMessage: string): string | null {
+  const text = userMessage.toLowerCase();
+  const match =
+    text.match(/upload(?:kan)?\s+(?:ke\s+|ini\s+ke\s+)?repo\s+([a-z0-9._-]+)/i) ||
+    text.match(/masukkan\s+(?:ke\s+)?repo\s+([a-z0-9._-]+)/i) ||
+    text.match(/kirim\s+(?:ke\s+)?repo\s+([a-z0-9._-]+)/i);
+  return match ? match[1] : null;
 }
