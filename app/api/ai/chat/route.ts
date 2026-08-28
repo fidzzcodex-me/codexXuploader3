@@ -2,6 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireToken, AuthError, getSession } from "@/lib/requireAuth";
 import { detectProposedAction } from "@/lib/aiActions";
 import { buildGithubContext } from "@/lib/aiContext";
+import {
+  detectReadIntent,
+  fetchFileContent,
+  fetchFolderListing,
+  fetchCodeSearchResults
+} from "@/lib/aiReadContext";
 import { getOctokit } from "@/lib/github";
 
 const AI_ENDPOINT = "https://www.my-website.my.id/api/ai/gemini";
@@ -11,7 +17,7 @@ export async function POST(req: NextRequest) {
   try {
     const { token, login } = await requireToken();
     const session = await getSession();
-    const { message } = await req.json();
+    const { message, history } = await req.json();
 
     if (!message || typeof message !== "string" || !message.trim()) {
       return NextResponse.json(
@@ -30,7 +36,44 @@ export async function POST(req: NextRequest) {
 
     const octokit = getOctokit(token);
     const context = await buildGithubContext(octokit, login);
-    const promptToSend = `${context}\n\nPesan pengguna: ${message.trim()}`;
+
+    const readIntent = detectReadIntent(message);
+    let readContext = "";
+    if (readIntent.type === "read_file" && readIntent.repo && readIntent.path) {
+      readContext = await fetchFileContent(
+        octokit,
+        login,
+        readIntent.repo,
+        readIntent.path
+      );
+    } else if (readIntent.type === "list_folder" && readIntent.repo) {
+      readContext = await fetchFolderListing(octokit, login, readIntent.repo);
+    } else if (readIntent.type === "code_search" && readIntent.query) {
+      readContext = await fetchCodeSearchResults(
+        octokit,
+        login,
+        readIntent.query,
+        readIntent.repo
+      );
+    }
+
+    let historyContext = "";
+    if (Array.isArray(history) && history.length > 0) {
+      const lines = history
+        .filter((h: any) => h && typeof h.text === "string")
+        .map((h: any) => `${h.role === "user" ? "Pengguna" : "Kamu"}: ${h.text}`)
+        .join("\n");
+      if (lines) {
+        historyContext = `\nRingkasan percakapan sebelumnya di sesi ini (untuk konteks, jangan diulang):\n${lines}\n`;
+      }
+    }
+
+    const promptToSend = [
+      context,
+      historyContext,
+      readContext ? `\nData tambahan yang diminta pengguna:\n${readContext}` : "",
+      `\nPesan pengguna saat ini: ${message.trim()}`
+    ].join("");
 
     const url = new URL(AI_ENDPOINT);
     url.searchParams.set("prompt", promptToSend);
