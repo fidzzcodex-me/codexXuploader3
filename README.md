@@ -84,17 +84,34 @@ scope minimal:
 - File berbeda dengan nama sama di-**replace**: file lama dihapus dan
   digantikan file baru pada commit yang sama (bukan disimpan berdampingan
   sebagai `nama (1).ext`).
-- Riwayat upload disimpan di **memory server terpisah dari cookie session**
-  (`lib/uploadHistoryStore.ts`), dikunci per sesi AI. Ini sengaja dipisah
-  dari cookie karena cookie browser dibatasi ~4KB — menaruh riwayat upload
-  di sana menyebabkan cookie gagal tersimpan ("session terlalu besar") begitu
-  ada cukup banyak file. Konsekuensinya: di Vercel (serverless), riwayat bisa
-  reset saat terjadi cold start / pindah instance. Untuk riwayat yang benar-
-  benar persisten lintas deploy, ganti store ini dengan database eksternal
-  (mis. Vercel KV/Postgres).
+- Riwayat upload disimpan di **`localStorage` browser** (`lib/uploadHistoryClient.ts`),
+  ditulis langsung oleh client setelah setiap upload sukses — bukan di server.
+  Awalnya riwayat ini disimpan di memory server, tapi itu tidak andal di
+  Vercel (serverless): request bisa dilayani instance berbeda-beda yang
+  tidak saling berbagi memory, jadi riwayat sering "hilang" padahal upload
+  berhasil. `localStorage` per-perangkat jauh lebih besar dari batas cookie
+  (~4KB) dan tidak bergantung pada instance server mana yang melayani.
+  Konsekuensinya: riwayat spesifik per browser/perangkat, bukan per akun
+  GitHub — beda browser/HP tidak akan saling melihat riwayat yang sama.
+  Ada tombol ekspor ke JSON dan bersihkan riwayat di halaman Riwayat.
+- Form input di halaman Upload (nama repo, folder tujuan, branch, file yang
+  sudah dipilih) dan progres upload yang sedang berjalan disimpan di
+  module-level state (`lib/uploadFormState.ts`, `lib/uploadRunner.ts`) yang
+  hidup di luar siklus komponen React — jadi tidak hilang saat pindah antar
+  tab dashboard, dan upload tetap lanjut di background walau kamu pindah
+  tab atau minimize app. Upload akan berhenti jika browser/tab benar-benar
+  ditutup atau proses browser dimatikan — itu batasan platform web tanpa
+  instalasi PWA, bukan sesuatu yang bisa diakali dari sisi kode.
 - Chat AI agent dipertahankan di `sessionStorage` browser (bukan React state
   biasa) supaya tidak hilang saat pindah antar tab dashboard — otomatis
   hilang saat tab ditutup atau logout.
 - Setiap pesan chat menyertakan snapshot data GitHub terbaru (jumlah repo,
   daftar repo, visibility) sebagai context ke AI, supaya jawabannya akurat
   terhadap keadaan akun saat ini, bukan cuma sekali di awal sesi.
+- File yang gagal diupload (misal karena rate limit sesaat) ditandai
+  `"failed"` tanpa menghentikan file lain dalam batch yang sama, dan bisa
+  dicoba ulang lewat tombol "Coba lagi yang gagal" tanpa perlu upload ulang
+  semuanya.
+- File di atas 75MB ditolak sebelum diupload (validasi di frontend dan
+  backend), karena GitHub Contents API punya batas praktis di sekitar itu
+  untuk konten yang di-base64-encode.
