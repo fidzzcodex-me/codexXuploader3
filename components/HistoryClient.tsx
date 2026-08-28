@@ -3,27 +3,23 @@
 import { useEffect, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
-  faTriangleExclamation,
   faCircleCheck,
   faClone,
   faPenToSquare,
   faInbox,
   faMagnifyingGlass,
   faXmark,
-  faArrowUpRightFromSquare
+  faArrowUpRightFromSquare,
+  faDownload,
+  faBroom
 } from "@fortawesome/free-solid-svg-icons";
 import "@/lib/fontawesome";
-
-interface HistoryItem {
-  id: string;
-  repo: string;
-  owner: string;
-  fileName: string;
-  finalPath: string;
-  sizeBytes: number;
-  status: "uploaded" | "skipped-duplicate" | "replaced";
-  createdAt: string;
-}
+import {
+  loadUploadHistory,
+  clearUploadHistory,
+  UploadHistoryItem
+} from "@/lib/uploadHistoryClient";
+import { useToast } from "@/components/ToastProvider";
 
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
@@ -31,7 +27,7 @@ function formatBytes(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function githubFileUrl(item: HistoryItem) {
+function githubFileUrl(item: UploadHistoryItem) {
   const encodedPath = item.finalPath
     .split("/")
     .map(encodeURIComponent)
@@ -46,28 +42,35 @@ const statusConfig = {
 };
 
 export default function HistoryClient() {
-  const [history, setHistory] = useState<HistoryItem[] | null>(null);
-  const [error, setError] = useState("");
+  const { showToast } = useToast();
+  const [history, setHistory] = useState<UploadHistoryItem[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
 
   useEffect(() => {
-    (async () => {
-      try {
-        const res = await fetch("/api/github/upload-history");
-        const data = await res.json();
-        if (!res.ok || !data.ok) {
-          setError(data.error || "Gagal memuat riwayat.");
-          return;
-        }
-        setHistory(data.history);
-      } catch {
-        setError("Koneksi ke server terputus.");
-      }
-    })();
+    setHistory(loadUploadHistory());
   }, []);
 
+  function handleExport() {
+    if (history.length === 0) return;
+    const blob = new Blob([JSON.stringify(history, null, 2)], {
+      type: "application/json"
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `harbor-upload-history-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast("Riwayat berhasil diekspor.", "success");
+  }
+
+  function handleClear() {
+    clearUploadHistory();
+    setHistory([]);
+    showToast("Riwayat berhasil dibersihkan.", "success");
+  }
+
   const filteredHistory = (() => {
-    if (!history) return null;
     const q = searchQuery.trim().toLowerCase();
     if (!q) return history;
     return history.filter(
@@ -79,46 +82,43 @@ export default function HistoryClient() {
 
   return (
     <div className="space-y-6">
-      <div data-aos="fade-up">
-        <h1 className="font-display text-2xl font-bold text-ink">Riwayat Upload</h1>
-        <p className="mt-1 text-sm text-ink/50">
-          Catatan setiap file yang pernah diupload di sesi ini.
-        </p>
+      <div data-aos="fade-up" className="flex items-center justify-between gap-3">
+        <div>
+          <h1 className="font-display text-2xl font-bold text-ink">Riwayat Upload</h1>
+          <p className="mt-1 text-sm text-ink/50">
+            Catatan setiap file yang pernah kamu upload, tersimpan di perangkat ini.
+          </p>
+        </div>
+        {history.length > 0 && (
+          <div className="flex shrink-0 gap-2">
+            <button
+              onClick={handleExport}
+              className="flex items-center gap-1.5 rounded-full border border-line bg-white px-3 py-1.5 text-xs font-semibold text-ink/50 shadow-card transition-colors hover:border-primary-200 hover:text-primary-600"
+              title="Ekspor riwayat ke JSON"
+            >
+              <FontAwesomeIcon icon={faDownload} className="h-3 w-3" />
+              <span className="hidden sm:inline">Ekspor</span>
+            </button>
+            <button
+              onClick={handleClear}
+              className="flex items-center gap-1.5 rounded-full border border-line bg-white px-3 py-1.5 text-xs font-semibold text-ink/50 shadow-card transition-colors hover:border-red-200 hover:text-red-500"
+              title="Bersihkan riwayat"
+            >
+              <FontAwesomeIcon icon={faBroom} className="h-3 w-3" />
+              <span className="hidden sm:inline">Bersihkan</span>
+            </button>
+          </div>
+        )}
       </div>
 
-      {error && (
-        <div className="flex items-center gap-2 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-600">
-          <FontAwesomeIcon icon={faTriangleExclamation} className="h-3.5 w-3.5" />
-          {error}
-        </div>
-      )}
-
-      {!history && !error && (
-        <div className="space-y-2.5">
-          {[0, 1, 2, 3, 4].map((i) => (
-            <div
-              key={i}
-              className="flex items-center gap-4 rounded-2xl border border-line bg-white p-4 shadow-card"
-            >
-              <div className="h-9 w-9 shrink-0 animate-pulse rounded-xl bg-mist" />
-              <div className="min-w-0 flex-1 space-y-2">
-                <div className="h-3.5 w-1/2 animate-pulse rounded-full bg-mist" />
-                <div className="h-2.5 w-1/3 animate-pulse rounded-full bg-mist/70" />
-              </div>
-              <div className="h-5 w-16 shrink-0 animate-pulse rounded-full bg-mist" />
-            </div>
-          ))}
-        </div>
-      )}
-
-      {history && history.length === 0 && (
+      {history.length === 0 && (
         <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-line bg-white py-16 text-center">
           <FontAwesomeIcon icon={faInbox} className="h-8 w-8 text-ink/20" />
           <p className="text-sm text-ink/40">Belum ada riwayat upload.</p>
         </div>
       )}
 
-      {history && history.length > 0 && (
+      {history.length > 0 && (
         <div data-aos="fade-up" data-aos-delay="40" className="relative">
           <FontAwesomeIcon
             icon={faMagnifyingGlass}
@@ -141,7 +141,7 @@ export default function HistoryClient() {
         </div>
       )}
 
-      {history && history.length > 0 && filteredHistory?.length === 0 && (
+      {history.length > 0 && filteredHistory.length === 0 && (
         <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-line bg-white py-16 text-center">
           <FontAwesomeIcon icon={faMagnifyingGlass} className="h-8 w-8 text-ink/20" />
           <p className="text-sm text-ink/40">
@@ -151,7 +151,7 @@ export default function HistoryClient() {
       )}
 
       <div className="space-y-2.5">
-        {filteredHistory?.map((item, i) => {
+        {filteredHistory.map((item, i) => {
           const cfg = statusConfig[item.status];
           return (
             <a
