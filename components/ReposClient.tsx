@@ -19,6 +19,7 @@ import {
 } from "@fortawesome/free-solid-svg-icons";
 import "@/lib/fontawesome";
 import { useToast } from "@/components/ToastProvider";
+import { appendUploadHistory } from "@/lib/uploadHistoryClient";
 
 interface Repo {
   id: number;
@@ -144,6 +145,19 @@ export default function ReposClient() {
 
           if (event === "done") {
             const count = data.results?.length || 0;
+            const now = new Date().toISOString();
+            appendUploadHistory(
+              (data.results || []).map((r: any) => ({
+                id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                repo: data.repo || repoName,
+                owner: data.owner,
+                fileName: r.fileName,
+                finalPath: r.finalPath,
+                sizeBytes: r.sizeBytes,
+                status: r.status,
+                createdAt: now
+              }))
+            );
             setQuickUpload({
               repoName,
               status: "done",
