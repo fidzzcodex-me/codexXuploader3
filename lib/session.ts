@@ -6,19 +6,6 @@ export interface SessionData {
   aiSessionId?: string;
 }
 
-export interface UploadRecord {
-  id: string;
-  repo: string;
-  owner: string;
-  fileName: string;
-  path: string;
-  sizeBytes: number;
-  sha: string;
-  status: "uploaded" | "skipped-duplicate" | "replaced";
-  finalPath: string;
-  createdAt: string;
-}
-
 export const sessionOptions: SessionOptions = {
   password: process.env.SESSION_SECRET as string,
   cookieName: "ghm_session",
@@ -26,7 +13,7 @@ export const sessionOptions: SessionOptions = {
     secure: process.env.NODE_ENV === "production",
     httpOnly: true,
     sameSite: "lax",
-    maxAge: 60 * 60 * 4 // 4 hours
+    maxAge: 60 * 60 * 4
   }
 };
 
