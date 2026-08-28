@@ -10,7 +10,7 @@ export interface FileToUpload {
 export interface UploadResultItem {
   fileName: string;
   finalPath: string;
-  status: "uploaded" | "skipped-duplicate" | "renamed";
+  status: "uploaded" | "skipped-duplicate" | "replaced";
   sha: string;
   sizeBytes: number;
 }
@@ -43,12 +43,6 @@ async function getExistingFile(
   }
 }
 
-function splitNameExt(fileName: string): { base: string; ext: string } {
-  const idx = fileName.lastIndexOf(".");
-  if (idx <= 0) return { base: fileName, ext: "" };
-  return { base: fileName.slice(0, idx), ext: fileName.slice(idx) };
-}
-
 async function uploadOneFile(
   octokit: Octokit,
   owner: string,
@@ -59,55 +53,58 @@ async function uploadOneFile(
   branch?: string
 ): Promise<UploadResultItem> {
   const localSha = gitBlobSha1(buffer);
-  const { base, ext } = splitNameExt(targetPath);
-  const dir = base.includes("/") ? base.slice(0, base.lastIndexOf("/") + 1) : "";
-  const baseName = base.includes("/") ? base.slice(base.lastIndexOf("/") + 1) : base;
+  const existing = await getExistingFile(octokit, owner, repo, targetPath, branch);
 
-  let candidatePath = targetPath;
-  let attempt = 0;
-  let status: "uploaded" | "skipped-duplicate" | "renamed" = "uploaded";
-
-  while (true) {
-    const existing = await getExistingFile(octokit, owner, repo, candidatePath, branch);
-
-    if (!existing) {
-      await octokit.repos.createOrUpdateFileContents({
-        owner,
-        repo,
-        path: candidatePath,
-        message: `${commitMessagePrefix}: add ${candidatePath}`,
-        content: buffer.toString("base64"),
-        ...(branch ? { branch } : {})
-      });
-      return {
-        fileName: targetPath,
-        finalPath: candidatePath,
-        status,
-        sha: localSha,
-        sizeBytes: buffer.length
-      };
-    }
-
-    if (existing.sha === localSha) {
-      return {
-        fileName: targetPath,
-        finalPath: candidatePath,
-        status: "skipped-duplicate",
-        sha: localSha,
-        sizeBytes: buffer.length
-      };
-    }
-
-    attempt += 1;
-    status = "renamed";
-    candidatePath = `${dir}${baseName} (${attempt})${ext}`;
+  if (!existing) {
+    await octokit.repos.createOrUpdateFileContents({
+      owner,
+      repo,
+      path: targetPath,
+      message: `${commitMessagePrefix}: add ${targetPath}`,
+      content: buffer.toString("base64"),
+      ...(branch ? { branch } : {})
+    });
+    return {
+      fileName: targetPath,
+      finalPath: targetPath,
+      status: "uploaded",
+      sha: localSha,
+      sizeBytes: buffer.length
+    };
   }
+
+  if (existing.sha === localSha) {
+    return {
+      fileName: targetPath,
+      finalPath: targetPath,
+      status: "skipped-duplicate",
+      sha: localSha,
+      sizeBytes: buffer.length
+    };
+  }
+
+  await octokit.repos.createOrUpdateFileContents({
+    owner,
+    repo,
+    path: targetPath,
+    message: `${commitMessagePrefix}: replace ${targetPath}`,
+    content: buffer.toString("base64"),
+    sha: existing.sha,
+    ...(branch ? { branch } : {})
+  });
+  return {
+    fileName: targetPath,
+    finalPath: targetPath,
+    status: "replaced",
+    sha: localSha,
+    sizeBytes: buffer.length
+  };
 }
 
 export interface FlatFileEntry {
   targetPath: string;
   buffer: Buffer;
-  sourceLabel: string; // original file/zip-entry name, for progress display
+  sourceLabel: string;
 }
 
 export async function flattenFilesForUpload(
