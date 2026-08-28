@@ -10,9 +10,10 @@ export interface FileToUpload {
 export interface UploadResultItem {
   fileName: string;
   finalPath: string;
-  status: "uploaded" | "skipped-duplicate" | "replaced";
+  status: "uploaded" | "skipped-duplicate" | "replaced" | "failed";
   sha: string;
   sizeBytes: number;
+  errorMessage?: string;
 }
 
 interface ExistingFileInfo {
@@ -155,15 +156,27 @@ export async function uploadFlatFiles(
   const results: UploadResultItem[] = [];
   for (let i = 0; i < flatFiles.length; i++) {
     const entry = flatFiles[i];
-    const result = await uploadOneFile(
-      octokit,
-      owner,
-      repo,
-      entry.targetPath,
-      entry.buffer,
-      "Upload",
-      branch
-    );
+    let result: UploadResultItem;
+    try {
+      result = await uploadOneFile(
+        octokit,
+        owner,
+        repo,
+        entry.targetPath,
+        entry.buffer,
+        "Upload",
+        branch
+      );
+    } catch (err: any) {
+      result = {
+        fileName: entry.targetPath,
+        finalPath: entry.targetPath,
+        status: "failed",
+        sha: "",
+        sizeBytes: entry.buffer.length,
+        errorMessage: err?.message || "Gagal mengupload file ini."
+      };
+    }
     results.push(result);
     if (onProgress) await onProgress(i + 1, flatFiles.length, result);
   }
